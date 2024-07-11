@@ -80,7 +80,14 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.commands {
-        Commands::Build { dir, file } => todo!(),
+        Commands::Build { dir, file } => {
+            // sort out the dir
+            let cwd = std::env::current_dir()?;
+            let abs_dir = cwd.join(dir.unwrap_or_else(PathBuf::new));
+
+            let builder = P8Builder::new(file, abs_dir)?;
+            builder.build()?;
+        }
         Commands::Dump { dir, file, purge } => {
             // sort out the dir
             let cwd = std::env::current_dir()?;
