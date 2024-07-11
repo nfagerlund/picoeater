@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
     fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{copy, BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
 };
 
@@ -36,6 +36,9 @@ use std::{
 
 /// The order of known resources (other than lua!) in a .p8 file.
 const RESOURCE_ORDER: [&str; 6] = ["gfx", "gff", "label", "map", "sfx", "music"];
+
+/// Header for the version of p8 we happen to be using today.
+const P8_HEADER: &str = "pico-8 cartridge // http://www.pico-8.com\nversion 41\n";
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -252,9 +255,85 @@ impl P8Dumper {
 }
 
 #[derive(Debug)]
+struct P8Builder {
+    writer: BufWriter<File>,
+    source: PathBuf,
+}
+
+/// Takes a mutable reference to a writer and a source filename, and
+/// copies the source to the writer line-by-line, inserting "\n" newlines
+/// after each line. This is way less efficient than std::io::copy(), but
+/// it takes care of normalizing any missing final newlines, AND sorting
+/// out any rogue CRLFs.
+fn slurp_file_by_line<W, P>(writer: &mut W, path: P) -> std::io::Result<()>
+where
+    W: Write,
+    P: AsRef<Path>,
+{
+    let reader = BufReader::new(File::open(path)?);
+    for item in reader.lines() {
+        let line = item?;
+        writer.write_all(line.as_ref())?;
+        writer.write_all("\n".as_ref())?;
+    }
+    Ok(())
+}
+
+impl P8Builder {
+    /// Make a new builder struct, given absolute paths to a p8 file target
+    /// and a source directory.
+    pub fn new(path: impl AsRef<Path>, source: PathBuf) -> std::io::Result<Self> {
+        File::create(path).map(|file| Self {
+            writer: BufWriter::new(file),
+            source,
+        })
+    }
+
+    /// Do the build. Returns nothing on success.
+    pub fn build(self) -> anyhow::Result<()> {
+        let Self { mut writer, source } = self;
+        // get the stuff
+        let mut components = ComponentFiles::list(source)?;
+        // write header
+        writer.write_all(P8_HEADER.as_ref())?;
+        // write luas
+        writer.write_all("__lua__\n".as_ref())?;
+        // ...btw, writing these requires some finesse, because 1. I can't
+        // guarantee there's a newline at the end of each file, and 2. I
+        // need to keep track of which file is last so we don't write an extra
+        // scissors line.
+        // Well, we'll just go line-by-line. less efficient, but safer.
+        if !components.lua.is_empty() {
+            // do the first one, then any extras with scissor lines.
+            slurp_file_by_line(&mut writer, &components.lua[0])?;
+            for path in &components.lua[1..] {
+                // scissor line
+                writer.write_all("-->8\n".as_ref())?;
+                slurp_file_by_line(&mut writer, path)?;
+            }
+        }
+        // write known resources
+        for kind in RESOURCE_ORDER {
+            if let Some(path) = components.rsc.remove(kind) {
+                writer.write_all(format!("__{}__", kind).as_ref())?;
+                slurp_file_by_line(&mut writer, path)?;
+            }
+        }
+        // write any leftover resources in arbitrary order 🤷🏽
+        for (kind, path) in components.rsc.iter() {
+            writer.write_all(format!("__{}__", kind).as_ref())?;
+            slurp_file_by_line(&mut writer, path)?;
+        }
+        // flush
+        writer.flush()?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 struct ComponentFiles {
     lua: Vec<PathBuf>,
-    rsc: HashMap<OsString, PathBuf>,
+    rsc: HashMap<String, PathBuf>,
 }
 
 fn osstr_eq_bytes(osstr: &OsStr, bytes: &[u8]) -> bool {
@@ -280,7 +359,7 @@ impl ComponentFiles {
                         lua.push(path);
                     } else if osstr_eq_bytes(ext, b"p8rsc") {
                         if let Some(kind) = path.file_stem() {
-                            rsc.insert(kind.to_owned(), path);
+                            rsc.insert(kind.to_string_lossy().into_owned(), path);
                         }
                     }
                 }
