@@ -93,8 +93,25 @@ fn main() -> anyhow::Result<()> {
             let cwd = std::env::current_dir()?;
             let abs_dir = cwd.join(dir.unwrap_or_else(PathBuf::new));
 
-            let dumper = P8Dumper::new(file, abs_dir)?;
+            let dumper = P8Dumper::new(file, abs_dir.clone())?;
             let written = dumper.dump()?;
+            let mut components = ComponentFiles::list(abs_dir)?;
+            components.difference(written);
+            if !components.is_empty() {
+                if purge {
+                    println!("Purging extra component files not included in the source .p8:");
+                    for path in components.iter() {
+                        println!("  - {}", path.to_string_lossy());
+                        std::fs::remove_file(path)?;
+                    }
+                } else {
+                    println!("WARNING: The target directory contains the following extra component files, which weren't included in the source .p8:\n");
+                    for path in components.iter() {
+                        println!("  - {}", path.to_string_lossy());
+                    }
+                    println!("\nFor a quick way to delete these extra files, run dump again with the `--purge` flag.")
+                }
+            }
         }
     }
 
@@ -378,6 +395,41 @@ impl ComponentFiles {
         // on the next round trip.
         lua.sort_unstable();
         Ok(Self { lua, rsc })
+    }
+
+    /// Given a list of .lua and .p8rsc files, remove any items in that list
+    /// from the collections.
+    fn difference(&mut self, subset: Vec<String>) {
+        let lua_ext = OsStr::new("lua");
+        let rsc_ext = OsStr::new("p8rsc");
+        for item in subset {
+            let to_remove = Path::new(&item);
+            let Some(ext) = to_remove.extension() else {
+                continue;
+            };
+            if ext == lua_ext {
+                self.lua
+                    .retain(|file| file.file_name() != to_remove.file_name());
+            } else if ext == rsc_ext {
+                let Some(os_kind) = to_remove.file_stem() else {
+                    continue;
+                };
+                let Some(kind) = os_kind.to_str() else {
+                    continue;
+                };
+                self.rsc.remove(kind);
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.lua.is_empty() && self.rsc.is_empty()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &PathBuf> {
+        let lua = self.lua.iter();
+        let rsc = self.rsc.iter().map(|e| e.1);
+        lua.chain(rsc)
     }
 }
 
