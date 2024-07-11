@@ -121,6 +121,21 @@ fn rsc_tag(line: &str) -> Option<&str> {
     None
 }
 
+// Note that this is only a valid question on the FIRST line of a lua
+// file, so only the LuaStart state can use it.
+fn lua_tag(line: &str) -> Option<&str> {
+    if line.len() > 2 && &line[0..2] == "--" {
+        let rest = line[2..].trim();
+        if rest.is_empty() {
+            None
+        } else {
+            Some(rest)
+        }
+    } else {
+        None
+    }
+}
+
 impl P8Dumper {
     /// Make a new P8Reader from a provided absolute file path and dir path.
     pub fn new(path: impl AsRef<Path>, dest: PathBuf) -> std::io::Result<Self> {
@@ -163,9 +178,9 @@ impl P8Dumper {
                     // Set up a new writer.
                     // Do we have a filename from an initial comment?
                     let mut filename = format!("{}", lua_index);
-                    if &line[0..2] == "--" {
+                    if let Some(name) = lua_tag(&line) {
                         filename.push('.');
-                        filename.push_str(&line[2..]);
+                        filename.push_str(name);
                     }
                     filename.push_str(".lua");
                     let mut writer = make_writer(filename)?;
