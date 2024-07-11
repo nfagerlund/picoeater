@@ -100,7 +100,7 @@ fn rsc_tag(line: &str) -> Option<&str> {
         // I'm gonna do a real fast and loose one here so I don't have to take a regexp
         // dep or hardcode the resource kinds.
         // basically I want it to be one "word" in there.
-        if !rest.contains(&[' ', '=', '.']) {
+        if !rest.contains([' ', '=', '.']) {
             return Some(rest);
         }
     }
@@ -116,17 +116,22 @@ impl P8Dumper {
         })
     }
 
-    pub fn dump(self) -> anyhow::Result<()> {
+    /// Do the dump. Returns the list of files written.
+    pub fn dump(self) -> anyhow::Result<Vec<String>> {
         // consume self
         let Self { reader, dest } = self;
         // initial state
         let mut state = ReadState::Init;
         // initial lua index
         let mut lua_index = 0u8;
+        // Keep track of which files we wrote to, so we can purge if desired.
+        let mut files_written: Vec<String> = Vec::new();
+
         // helper closure for resource writers, since we make those in two spots
-        let make_rsc_writer = |kind: &str| -> std::io::Result<BufWriter<File>> {
-            let filename = format!("{}.p8rsc", &kind);
-            let path = dest.join(filename);
+        let mut make_writer = |filename: String| -> std::io::Result<BufWriter<File>> {
+            let path = dest.join(&filename);
+            // stow that filename
+            files_written.push(filename);
             let file = File::create(path)?;
             Ok(BufWriter::new(file))
         };
@@ -149,10 +154,7 @@ impl P8Dumper {
                         filename.push_str(&line[2..]);
                     }
                     filename.push_str(".lua");
-                    let path = dest.join(&filename);
-                    // overwrite any existing file
-                    let file = File::create(path)?;
-                    let mut writer = BufWriter::new(file);
+                    let mut writer = make_writer(filename)?;
                     // Write that initial line so we don't drop it!
                     writer.write_all(line.as_ref())?;
                     writer.write_all("\n".as_ref())?;
@@ -171,7 +173,8 @@ impl P8Dumper {
                         // we're done!
                         writer.flush()?;
                         // set up the resource writer.
-                        let writer = make_rsc_writer(rsc_kind)?;
+                        let filename = format!("{}.p8rsc", &rsc_kind);
+                        let writer = make_writer(filename)?;
                         // We don't write the tag line to the file.
                         state = ReadState::Rsc { writer };
                     } else {
@@ -184,7 +187,8 @@ impl P8Dumper {
                     if let Some(rsc_kind) = rsc_tag(&line) {
                         // we're done. next!
                         writer.flush()?;
-                        let writer = make_rsc_writer(rsc_kind)?;
+                        let filename = format!("{}.p8rsc", &rsc_kind);
+                        let writer = make_writer(filename)?;
                         // We don't write the tag line to the file.
                         state = ReadState::Rsc { writer };
                     } else {
@@ -210,6 +214,6 @@ impl P8Dumper {
                 writer.flush()?;
             }
         }
-        Ok(())
+        Ok(files_written)
     }
 }
