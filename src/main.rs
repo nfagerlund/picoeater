@@ -322,13 +322,13 @@ impl P8Builder {
         // write known resources
         for kind in RESOURCE_ORDER {
             if let Some(path) = components.rsc.remove(kind) {
-                writer.write_all(format!("__{}__", kind).as_ref())?;
+                writer.write_all(format!("__{}__\n", kind).as_ref())?;
                 slurp_file_by_line(&mut writer, path)?;
             }
         }
         // write any leftover resources in arbitrary order 🤷🏽
         for (kind, path) in components.rsc.iter() {
-            writer.write_all(format!("__{}__", kind).as_ref())?;
+            writer.write_all(format!("__{}__\n", kind).as_ref())?;
             slurp_file_by_line(&mut writer, path)?;
         }
         // flush
