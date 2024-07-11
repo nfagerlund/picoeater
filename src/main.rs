@@ -1,5 +1,9 @@
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::{
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::{Path, PathBuf},
+};
 
 // Okay, so http://pico8wiki.com/index.php?title=P8FileFormat
 // - I'm gonna handle multiple lua files, and preserve the order
@@ -67,4 +71,145 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
     println!("{:?}", &cli);
+}
+
+struct P8Dumper {
+    reader: BufReader<File>,
+    dest: PathBuf,
+}
+
+enum ReadState {
+    Init,
+    // LuaStart gets its own thing because of those magic scissor lines.
+    LuaStart,
+    Lua { writer: BufWriter<File> },
+    Rsc { writer: BufWriter<File> },
+}
+
+#[derive(thiserror::Error, Debug)]
+enum DumpError {
+    #[error("Somehow never got out of Init; either a bug or a corrupt .p8 file")]
+    EndInInit,
+    #[error("Somehow ended in LuaStart; either a bug or a corrupt .p8 file")]
+    EndInLuaStart,
+}
+
+fn rsc_tag(line: &str) -> Option<&str> {
+    if &line[0..2] == "__" && &line[(line.len() - 2)..line.len()] == "__" {
+        let rest = &line[2..(line.len() - 2)];
+        // I'm gonna do a real fast and loose one here so I don't have to take a regexp
+        // dep or hardcode the resource kinds.
+        // basically I want it to be one "word" in there.
+        if !rest.contains(&[' ', '=', '.']) {
+            return Some(rest);
+        }
+    }
+    None
+}
+
+impl P8Dumper {
+    /// Make a new P8Reader from a provided absolute file path and dir path.
+    pub fn new(path: impl AsRef<Path>, dest: PathBuf) -> std::io::Result<Self> {
+        File::open(path).map(|file| Self {
+            reader: BufReader::new(file),
+            dest,
+        })
+    }
+
+    pub fn dump(self) -> anyhow::Result<()> {
+        // consume self
+        let Self { reader, dest } = self;
+        // initial state
+        let mut state = ReadState::Init;
+        // initial lua index
+        let mut lua_index = 0u8;
+        // helper closure for resource writers, since we make those in two spots
+        let make_rsc_writer = |kind: &str| -> std::io::Result<BufWriter<File>> {
+            let filename = format!("{}.p8rsc", &kind);
+            let path = dest.join(filename);
+            let file = File::create(path)?;
+            Ok(BufWriter::new(file))
+        };
+
+        for item in reader.lines() {
+            let line = item?;
+            match &mut state {
+                ReadState::Init => {
+                    // Skip the header until you get to the lua section.
+                    if line == "__lua__" {
+                        state = ReadState::LuaStart;
+                    }
+                }
+                ReadState::LuaStart => {
+                    // Set up a new writer.
+                    // Do we have a filename from an initial comment?
+                    let mut filename = format!("{}", lua_index);
+                    if &line[0..2] == "--" {
+                        filename.push('.');
+                        filename.push_str(&line[2..]);
+                    }
+                    filename.push_str(".lua");
+                    let path = dest.join(&filename);
+                    // overwrite any existing file
+                    let file = File::create(path)?;
+                    let mut writer = BufWriter::new(file);
+                    // Write that initial line so we don't drop it!
+                    writer.write_all(line.as_ref())?;
+                    writer.write_all("\n".as_ref())?;
+                    // bump the index for next time
+                    lua_index += 1;
+                    // go.
+                    state = ReadState::Lua { writer };
+                }
+                ReadState::Lua { writer } => {
+                    if &line == "-->8" {
+                        // we're done!!
+                        writer.flush()?;
+                        // NEXT,
+                        state = ReadState::LuaStart;
+                    } else if let Some(rsc_kind) = rsc_tag(&line) {
+                        // we're done!
+                        writer.flush()?;
+                        // set up the resource writer.
+                        let writer = make_rsc_writer(rsc_kind)?;
+                        // We don't write the tag line to the file.
+                        state = ReadState::Rsc { writer };
+                    } else {
+                        // normal line. write!
+                        writer.write_all(line.as_ref())?;
+                        writer.write_all("\n".as_ref())?;
+                    }
+                }
+                ReadState::Rsc { writer } => {
+                    if let Some(rsc_kind) = rsc_tag(&line) {
+                        // we're done. next!
+                        writer.flush()?;
+                        let writer = make_rsc_writer(rsc_kind)?;
+                        // We don't write the tag line to the file.
+                        state = ReadState::Rsc { writer };
+                    } else {
+                        // normal line. write!
+                        writer.write_all(line.as_ref())?;
+                        writer.write_all("\n".as_ref())?;
+                    }
+                }
+            }
+        }
+        // Do a final flush once we've consumed the whole file.
+        match state {
+            ReadState::Init => {
+                return Err(DumpError::EndInInit.into());
+            }
+            ReadState::LuaStart => {
+                return Err(DumpError::EndInLuaStart.into());
+            }
+            ReadState::Lua { mut writer } => {
+                writer.flush()?;
+            }
+            ReadState::Rsc { mut writer } => {
+                writer.flush()?;
+            }
+        }
+        Ok(())
+    }
 }
