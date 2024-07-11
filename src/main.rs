@@ -34,6 +34,9 @@ use std::{
 // > (__label__), the map (__map__), sound effects (__sfx__), and music patterns
 // > (__music__). These sections are described in more detail below.
 
+/// The order of known resources (other than lua!) in a .p8 file.
+const RESOURCE_ORDER: [&str; 6] = ["gfx", "gff", "label", "map", "sfx", "music"];
+
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Cli {
