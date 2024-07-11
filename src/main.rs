@@ -3,6 +3,7 @@ use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 // Okay, so http://pico8wiki.com/index.php?title=P8FileFormat
@@ -68,9 +69,22 @@ enum Commands {
     },
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    println!("{:?}", &cli);
+
+    match cli.commands {
+        Commands::Build { dir, file } => todo!(),
+        Commands::Dump { dir, file, purge } => {
+            // sort out the dir
+            let cwd = std::env::current_dir()?;
+            let abs_dir = cwd.join(dir.unwrap_or_else(PathBuf::new));
+
+            let dumper = P8Dumper::new(file, abs_dir)?;
+            let written = dumper.dump()?;
+        }
+    }
+
+    Ok(())
 }
 
 struct P8Dumper {
