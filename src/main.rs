@@ -1,9 +1,10 @@
 use clap::{Parser, Subcommand};
 use std::{
+    collections::HashMap,
+    ffi::{OsStr, OsString},
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
-    str::FromStr,
 };
 
 // Okay, so http://pico8wiki.com/index.php?title=P8FileFormat
@@ -245,4 +246,55 @@ impl P8Dumper {
         }
         Ok(files_written)
     }
+}
+
+#[derive(Debug)]
+struct ComponentFiles {
+    lua: Vec<PathBuf>,
+    rsc: HashMap<OsString, PathBuf>,
+}
+
+fn osstr_eq_bytes(osstr: &OsStr, bytes: &[u8]) -> bool {
+    osstr.as_encoded_bytes() == bytes
+}
+
+impl ComponentFiles {
+    /// Takes an absolute directory path, finds and sorts the p8 stuff.
+    fn list(dir: impl AsRef<Path>) -> std::io::Result<Self> {
+        let mut lua = Vec::new();
+        let mut rsc = HashMap::new();
+        for item in std::fs::read_dir(dir.as_ref())? {
+            // If it's a lua file, put it in the vec (then later sort the vec).
+            // If it's a .p8rsc file, put it in the hashmap.
+            // If it's anything else, ignore it.
+            let entry = item?;
+            if entry.file_type()?.is_file() {
+                // doing an early allocating conversion to PathBuf so I can check
+                // file extension without having to write my own .split() for OsStr -_-
+                let path = entry.path();
+                if let Some(ext) = path.extension() {
+                    if osstr_eq_bytes(ext, b"lua") {
+                        lua.push(path);
+                    } else if osstr_eq_bytes(ext, b"p8rsc") {
+                        if let Some(kind) = path.file_stem() {
+                            rsc.insert(kind.to_owned(), path);
+                        }
+                    }
+                }
+            }
+        }
+        // Sort luas by filename; since they're numbered, this should put them back
+        // in the order they arrived in. If you made conflicting numbers, the
+        // resulting built order will be abritrary, and it'll sort itself out
+        // on the next round trip.
+        lua.sort_unstable();
+        Ok(Self { lua, rsc })
+    }
+}
+
+#[test]
+fn hey() {
+    let dir = PathBuf::from("/Users/nick/Documents/code/dr_chaos");
+    let cf = ComponentFiles::list(dir).unwrap();
+    println!("{:?}", cf);
 }
