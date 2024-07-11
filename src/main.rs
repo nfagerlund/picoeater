@@ -31,22 +31,37 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Cli {
-    /// The directory the component files should go in. Defaults to the
-    /// current working directory.
-    #[arg(short, long)]
-    dir: Option<PathBuf>,
-
-    /// The combined .p8 file to operate on.
-    file: PathBuf,
-
     #[command(subcommand)]
     commands: Commands,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Build,
-    Dump,
+    /// Build a .p8 file from a collection of individual component files.
+    Build {
+        /// The directory the component files should go in. Defaults to the
+        /// current working directory.
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+
+        /// The combined .p8 file to operate on.
+        file: PathBuf,
+    },
+    /// Dump a collection of individual component files from a .p8 file.
+    Dump {
+        /// The directory the component files should go in. Defaults to the
+        /// current working directory.
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+
+        /// The combined .p8 file to operate on.
+        file: PathBuf,
+
+        /// If there are component files in the target dir that aren't in
+        /// the source .p8 file, delete them.
+        #[arg(short, long)]
+        purge: bool,
+    },
 }
 
 fn main() {
