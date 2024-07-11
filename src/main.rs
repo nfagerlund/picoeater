@@ -109,7 +109,7 @@ enum DumpError {
 }
 
 fn rsc_tag(line: &str) -> Option<&str> {
-    if &line[0..2] == "__" && &line[(line.len() - 2)..line.len()] == "__" {
+    if line.len() > 4 && &line[0..2] == "__" && &line[(line.len() - 2)..line.len()] == "__" {
         let rest = &line[2..(line.len() - 2)];
         // I'm gonna do a real fast and loose one here so I don't have to take a regexp
         // dep or hardcode the resource kinds.
