@@ -560,10 +560,3 @@ impl ComponentFiles {
         lua.chain(rsc)
     }
 }
-
-#[test]
-fn hey() {
-    let dir = PathBuf::from("/Users/nick/Documents/code/dr_chaos");
-    let cf = ComponentFiles::list(dir).unwrap();
-    println!("{:?}", cf);
-}
