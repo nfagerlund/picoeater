@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use std::{
     collections::HashMap,
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     fs::File,
-    io::{copy, BufRead, BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
 };
 
@@ -51,13 +51,14 @@ struct Cli {
 enum Commands {
     /// Build a .p8 file from a collection of individual component files.
     Build {
-        /// The directory the component files should go in. Defaults to the
+        /// The directory the component files should come from. Defaults to the
         /// current working directory.
         #[arg(short, long)]
         dir: Option<PathBuf>,
 
-        /// The combined .p8 file to operate on.
-        file: PathBuf,
+        /// The combined .p8 file to build. If there's only one existing .p8 in the
+        /// source directory, it defaults to replacing that.
+        file: Option<PathBuf>,
     },
     /// Dump a collection of individual component files from a .p8 file.
     Dump {
@@ -66,8 +67,9 @@ enum Commands {
         #[arg(short, long)]
         dir: Option<PathBuf>,
 
-        /// The combined .p8 file to operate on.
-        file: PathBuf,
+        /// The combined .p8 file to dump. If there's only one .p8 in the
+        /// target directory, it defaults to that.
+        file: Option<PathBuf>,
 
         /// If there are component files in the target dir that aren't in
         /// the source .p8 file, delete them.
@@ -84,16 +86,24 @@ fn main() -> anyhow::Result<()> {
             // sort out the dir
             let cwd = std::env::current_dir()?;
             let abs_dir = cwd.join(dir.unwrap_or_else(PathBuf::new));
+            let real_file = match file {
+                Some(f) => f,
+                None => get_default_p8(&abs_dir)?,
+            };
 
-            let builder = P8Builder::new(file, abs_dir)?;
+            let builder = P8Builder::new(real_file, abs_dir)?;
             builder.build()?;
         }
         Commands::Dump { dir, file, purge } => {
             // sort out the dir
             let cwd = std::env::current_dir()?;
             let abs_dir = cwd.join(dir.unwrap_or_else(PathBuf::new));
+            let real_file = match file {
+                Some(f) => f,
+                None => get_default_p8(&abs_dir)?,
+            };
 
-            let dumper = P8Dumper::new(file, abs_dir.clone())?;
+            let dumper = P8Dumper::new(real_file, abs_dir.clone())?;
             let written = dumper.dump()?;
             let mut components = ComponentFiles::list(abs_dir)?;
             components.difference(written);
@@ -116,6 +126,31 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(thiserror::Error, Debug)]
+enum DefaultP8Error {
+    #[error("No default .p8: zero existing .p8 files in the working directory.\nYou'll need to specify a filename.")]
+    Zero,
+    #[error("No default .p8: too many existing .p8 files in the working directory.\nYou'll need to specify a filename.")]
+    TooMany,
+}
+
+fn get_default_p8(dir: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
+    let p8ext = OsStr::new("p8");
+    let mut p8s: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| match path.extension() {
+            Some(ext) => ext == p8ext,
+            None => false,
+        })
+        .collect();
+    if p8s.is_empty() {
+        return Err(DefaultP8Error::Zero.into());
+    } else if p8s.len() > 1 {
+        return Err(DefaultP8Error::TooMany.into());
+    }
+    Ok(p8s.pop().unwrap())
 }
 
 struct P8Dumper {
