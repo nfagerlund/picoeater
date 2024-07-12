@@ -104,7 +104,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             let dumper = P8Dumper::new(real_file, abs_dir.clone())?;
-            let written = dumper.dump()?;
+            let (written, tab_order, rsc_order) = dumper.dump()?;
             let mut components = ComponentFiles::list(abs_dir)?;
             components.difference(written);
             if !components.is_empty() {
@@ -160,18 +160,23 @@ struct P8Dumper {
 
 enum ReadState {
     Init,
-    // LuaStart gets its own thing because of those magic scissor lines.
+    // LuaStart gets the script name on the next line, bc it goes "scissors \n comment".
     LuaStart,
     Lua { writer: BufWriter<File> },
+    // RscStart needs to remember the kind, because the separator is one line, not two.
+    RscStart { kind: String },
     Rsc { writer: BufWriter<File> },
 }
 
 #[derive(thiserror::Error, Debug)]
+#[allow(clippy::enum_variant_names)]
 enum DumpError {
     #[error("Somehow never got out of Init; either a bug or a corrupt .p8 file")]
     EndInInit,
     #[error("Somehow ended in LuaStart; either a bug or a corrupt .p8 file")]
     EndInLuaStart,
+    #[error("Somehow ended in RscStart; either a bug or a corrupt .p8 file")]
+    EndInRscStart,
 }
 
 fn rsc_tag(line: &str) -> Option<&str> {
@@ -212,7 +217,7 @@ impl P8Dumper {
     }
 
     /// Do the dump. Returns the list of files written.
-    pub fn dump(self) -> anyhow::Result<Vec<String>> {
+    pub fn dump(self) -> anyhow::Result<(Vec<String>, Vec<String>, Vec<String>)> {
         // consume self
         let Self { reader, dest } = self;
         // initial state
@@ -221,6 +226,8 @@ impl P8Dumper {
         let mut lua_index = 0u8;
         // Keep track of which files we wrote to, so we can purge if desired.
         let mut files_written: Vec<String> = Vec::new();
+        let mut tab_order: Vec<String> = Vec::new();
+        let mut rsc_order: Vec<String> = Vec::new();
 
         // helper closure for resource writers, since we make those in two spots
         let mut make_writer = |filename: String| -> std::io::Result<BufWriter<File>> {
@@ -236,19 +243,21 @@ impl P8Dumper {
             match &mut state {
                 ReadState::Init => {
                     // Skip the header until you get to the lua section.
+                    // TODO: save version
                     if line == "__lua__" {
                         state = ReadState::LuaStart;
                     }
                 }
                 ReadState::LuaStart => {
                     // Set up a new writer.
-                    // Do we have a filename from an initial comment?
-                    let mut filename = format!("{:02}", lua_index);
-                    if let Some(name) = lua_tag(&line) {
-                        filename.push('.');
-                        filename.push_str(name);
-                    }
-                    filename.push_str(".lua");
+                    // Do we have a script name from an initial comment?
+                    let name = match lua_tag(&line) {
+                        Some(tag) => tag.to_string(),
+                        None => format!("{:02}", lua_index),
+                    };
+                    let filename = format!("{}.lua", &name);
+                    // Save the script name to tab order
+                    tab_order.push(name);
                     let mut writer = make_writer(filename)?;
                     // Write that initial line so we don't drop it!
                     writer.write_all(line.as_ref())?;
@@ -267,25 +276,31 @@ impl P8Dumper {
                     } else if let Some(rsc_kind) = rsc_tag(&line) {
                         // we're done!
                         writer.flush()?;
-                        // set up the resource writer.
-                        let filename = format!("{}.p8rsc", &rsc_kind);
-                        let writer = make_writer(filename)?;
-                        // We don't write the tag line to the file.
-                        state = ReadState::Rsc { writer };
+                        // Next stop, resourceville
+                        state = ReadState::RscStart {
+                            kind: rsc_kind.to_string(),
+                        };
                     } else {
                         // normal line. write!
                         writer.write_all(line.as_ref())?;
                         writer.write_all("\n".as_ref())?;
                     }
                 }
+                ReadState::RscStart { kind } => {
+                    let kind = kind.clone();
+                    let filename = format!("{}.p8rsc", &kind);
+                    // also stash the kind to resource order
+                    rsc_order.push(kind);
+                    let writer = make_writer(filename)?;
+                    state = ReadState::Rsc { writer };
+                }
                 ReadState::Rsc { writer } => {
                     if let Some(rsc_kind) = rsc_tag(&line) {
                         // we're done. next!
                         writer.flush()?;
-                        let filename = format!("{}.p8rsc", &rsc_kind);
-                        let writer = make_writer(filename)?;
-                        // We don't write the tag line to the file.
-                        state = ReadState::Rsc { writer };
+                        state = ReadState::RscStart {
+                            kind: rsc_kind.to_string(),
+                        };
                     } else {
                         // normal line. write!
                         writer.write_all(line.as_ref())?;
@@ -302,6 +317,9 @@ impl P8Dumper {
             ReadState::LuaStart => {
                 return Err(DumpError::EndInLuaStart.into());
             }
+            ReadState::RscStart { .. } => {
+                return Err(DumpError::EndInRscStart.into());
+            }
             ReadState::Lua { mut writer } => {
                 writer.flush()?;
             }
@@ -309,7 +327,7 @@ impl P8Dumper {
                 writer.flush()?;
             }
         }
-        Ok(files_written)
+        Ok((files_written, tab_order, rsc_order))
     }
 }
 
