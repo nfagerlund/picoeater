@@ -36,12 +36,11 @@ use std::{
 
 /// The order of known resources (other than lua!) in a .p8 file.
 const DEFAULT_RESOURCE_ORDER: [&str; 6] = ["gfx", "gff", "label", "map", "sfx", "music"];
-
-/// Header for the version of p8 we happen to be using today.
-const P8_HEADER: &str = "pico-8 cartridge // http://www.pico-8.com\nversion 41\n";
+const DEFAULT_P8_VERSION: &str = "41";
 
 const RSC_ORDER_FILE: &str = "_rsc_order.p8meta";
 const TAB_ORDER_FILE: &str = "_tab_order.p8meta";
+const P8_VERSION_FILE: &str = "_version.p8meta";
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -252,8 +251,13 @@ impl P8Dumper {
             let line = item?;
             match &mut state {
                 ReadState::Init => {
-                    // Skip the header until you get to the lua section.
-                    // TODO: save version
+                    // Get version from the header, and wait for the lua section.
+                    if line.starts_with("version") {
+                        if let Some((_, ver)) = line.split_once(' ') {
+                            std::fs::write(P8_VERSION_FILE, ver)?;
+                        }
+                    }
+
                     if line == "__lua__" {
                         state = ReadState::LuaStart;
                     }
@@ -413,7 +417,7 @@ impl P8Builder {
         let Self { mut writer, source } = self;
         // get the stuff
         let mut components = ComponentFiles::list(&source)?;
-        // load the order files
+        // load the meta files
         let tab_order = read_optional_text_file(source.join(TAB_ORDER_FILE))?;
         let mut rsc_order = read_optional_text_file(source.join(RSC_ORDER_FILE))?;
         // tbh this shouldn't ever happen, but anyway:
@@ -421,8 +425,18 @@ impl P8Builder {
             rsc_order = DEFAULT_RESOURCE_ORDER.join("\n");
             rsc_order.push('\n');
         }
+        let mut version = read_optional_text_file(source.join(P8_VERSION_FILE))?;
+        if version.trim().is_empty() {
+            version = DEFAULT_P8_VERSION.to_string();
+        }
         // write header
-        writer.write_all(P8_HEADER.as_ref())?;
+        writer.write_all(
+            format!(
+                "pico-8 cartridge // http://www.pico-8.com\nversion {}\n",
+                version.trim()
+            )
+            .as_ref(),
+        )?;
         // write luas
         writer.write_all("__lua__\n".as_ref())?;
         // ...btw, writing these requires some finesse, because 1. I can't
