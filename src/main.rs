@@ -433,7 +433,7 @@ impl P8Builder {
         let mut first = true;
         // First write the known tab order
         for script_name in tab_order.lines() {
-            if let Some(path) = components.lua_map.remove(script_name) {
+            if let Some(path) = components.lua.remove(script_name) {
                 if !first {
                     // scissor line
                     writer.write_all("-->8\n".as_ref())?;
@@ -443,7 +443,7 @@ impl P8Builder {
             }
         }
         // Then leftover scripts in arbitrary order
-        for path in components.lua_map.values() {
+        for path in components.lua.values() {
             if !first {
                 // scissor line
                 writer.write_all("-->8\n".as_ref())?;
@@ -471,7 +471,7 @@ impl P8Builder {
 
 #[derive(Debug)]
 struct ComponentFiles {
-    lua_map: HashMap<String, PathBuf>,
+    lua: HashMap<String, PathBuf>,
     rsc: HashMap<String, PathBuf>,
 }
 
@@ -514,13 +514,13 @@ impl ComponentFiles {
                 }
             }
         }
-        Ok(Self { lua_map, rsc })
+        Ok(Self { lua: lua_map, rsc })
     }
 
     /// Given a list of script names, remove any matching items from the collection.
     fn remove_script_names(&mut self, subset: &[impl AsRef<str>]) {
         for item in subset {
-            self.lua_map.remove(item.as_ref());
+            self.lua.remove(item.as_ref());
         }
     }
 
@@ -532,11 +532,11 @@ impl ComponentFiles {
     }
 
     fn is_empty(&self) -> bool {
-        self.lua_map.is_empty() && self.rsc.is_empty()
+        self.lua.is_empty() && self.rsc.is_empty()
     }
 
     fn iter(&self) -> impl Iterator<Item = &PathBuf> {
-        let lua = self.lua_map.values();
+        let lua = self.lua.values();
         let rsc = self.rsc.values();
         lua.chain(rsc)
     }
