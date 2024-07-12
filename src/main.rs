@@ -243,7 +243,7 @@ impl P8Dumper {
                 ReadState::LuaStart => {
                     // Set up a new writer.
                     // Do we have a filename from an initial comment?
-                    let mut filename = format!("{}", lua_index);
+                    let mut filename = format!("{:02}", lua_index);
                     if let Some(name) = lua_tag(&line) {
                         filename.push('.');
                         filename.push_str(name);
