@@ -21,3 +21,12 @@ The filename argument is also optional, IF the directory you're working with con
 If you dump a cart and the directory happens to already have _extra component files_ that weren't present in the version of the cart you dumped, the tool will warn you, because it might mean something funky is happening. (It definitely means you're not getting the same cart back if you subsequently run a build.)
 
 You can run a second dump with the `--purge` option to delete those extra files, if you look into it and decide you don't want 'em.
+
+## Compiling
+
+This is a Rust program, so you need to
+
+- Use [rustup](https://rustup.rs/) to install a Rust compiler toolchain, if you've never done that before.
+- cd to this directory.
+- `cargo build --release`
+- The resulting binary is at `./target/release/picoeater` (or `picoeater.exe` [if you're nasty](https://www.youtube.com/watch?v=ujnq2v6R02U)).
