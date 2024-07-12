@@ -35,10 +35,13 @@ use std::{
 // > (__music__). These sections are described in more detail below.
 
 /// The order of known resources (other than lua!) in a .p8 file.
-const RESOURCE_ORDER: [&str; 6] = ["gfx", "gff", "label", "map", "sfx", "music"];
+const DEFAULT_RESOURCE_ORDER: [&str; 6] = ["gfx", "gff", "label", "map", "sfx", "music"];
 
 /// Header for the version of p8 we happen to be using today.
 const P8_HEADER: &str = "pico-8 cartridge // http://www.pico-8.com\nversion 41\n";
+
+const RSC_ORDER_FILE: &str = "_rsc_order.p8meta";
+const TAB_ORDER_FILE: &str = "_tab_order.p8meta";
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -104,9 +107,13 @@ fn main() -> anyhow::Result<()> {
             };
 
             let dumper = P8Dumper::new(real_file, abs_dir.clone())?;
-            let (written, tab_order, rsc_order) = dumper.dump()?;
+            let DumpResults {
+                tab_order,
+                rsc_order,
+            } = dumper.dump()?;
             let mut components = ComponentFiles::list(abs_dir)?;
-            components.difference(written);
+            components.remove_script_names(&tab_order);
+            components.remove_resource_kinds(&rsc_order);
             if !components.is_empty() {
                 if purge {
                     println!("Purging extra component files not included in the source .p8:");
@@ -115,7 +122,7 @@ fn main() -> anyhow::Result<()> {
                         std::fs::remove_file(path)?;
                     }
                 } else {
-                    println!("WARNING: The target directory contains the following extra component files, which weren't included in the source .p8:\n");
+                    println!("WARNING: The target directory contains extra component files that weren't included in the source .p8:\n");
                     for path in components.iter() {
                         println!("  - {}", path.to_string_lossy());
                     }
@@ -207,6 +214,11 @@ fn lua_tag(line: &str) -> Option<&str> {
     }
 }
 
+struct DumpResults {
+    tab_order: Vec<String>,
+    rsc_order: Vec<String>,
+}
+
 impl P8Dumper {
     /// Make a new P8Reader from a provided absolute file path and dir path.
     pub fn new(path: impl AsRef<Path>, dest: PathBuf) -> std::io::Result<Self> {
@@ -216,24 +228,22 @@ impl P8Dumper {
         })
     }
 
-    /// Do the dump. Returns the list of files written.
-    pub fn dump(self) -> anyhow::Result<(Vec<String>, Vec<String>, Vec<String>)> {
+    /// Do the dump. Returns the list of lua scripts written, and the list of resources written.
+    pub fn dump(self) -> anyhow::Result<DumpResults> {
         // consume self
         let Self { reader, dest } = self;
         // initial state
         let mut state = ReadState::Init;
         // initial lua index
         let mut lua_index = 0u8;
-        // Keep track of which files we wrote to, so we can purge if desired.
-        let mut files_written: Vec<String> = Vec::new();
+        // Keep track of which files we wrote to in which order. We use this for builds,
+        // and for purging.
         let mut tab_order: Vec<String> = Vec::new();
         let mut rsc_order: Vec<String> = Vec::new();
 
         // helper closure for resource writers, since we make those in two spots
-        let mut make_writer = |filename: String| -> std::io::Result<BufWriter<File>> {
-            let path = dest.join(&filename);
-            // stow that filename
-            files_written.push(filename);
+        let make_writer = |filename: &str| -> std::io::Result<BufWriter<File>> {
+            let path = dest.join(filename);
             let file = File::create(path)?;
             Ok(BufWriter::new(file))
         };
@@ -251,14 +261,26 @@ impl P8Dumper {
                 ReadState::LuaStart => {
                     // Set up a new writer.
                     // Do we have a script name from an initial comment?
-                    let name = match lua_tag(&line) {
+                    let maybe_name = lua_tag(&line);
+                    let mut name = match maybe_name {
                         Some(tag) => tag.to_string(),
-                        None => format!("{:02}", lua_index),
+                        None => format!("unknown-{:02}", lua_index),
                     };
+                    // If there's a name collision, do something gross to avoid calamity.
+                    while tab_order.contains(&name) {
+                        name.push_str("-again");
+                    }
                     let filename = format!("{}.lua", &name);
+                    let mut writer = make_writer(&filename)?;
+                    // If we didn't get a name from the initial line, guess what:
+                    // we'll damn well get one next time :] This makes THIS round-trip
+                    // inexact, but it should help keep subsequent round-trips more stable.
+                    if maybe_name.is_none() {
+                        writer.write_all(format!("-- {}", &name).as_ref())?;
+                        writer.write_all("\n".as_ref())?;
+                    }
                     // Save the script name to tab order
                     tab_order.push(name);
-                    let mut writer = make_writer(filename)?;
                     // Write that initial line so we don't drop it!
                     writer.write_all(line.as_ref())?;
                     writer.write_all("\n".as_ref())?;
@@ -291,7 +313,11 @@ impl P8Dumper {
                     let filename = format!("{}.p8rsc", &kind);
                     // also stash the kind to resource order
                     rsc_order.push(kind);
-                    let writer = make_writer(filename)?;
+                    let mut writer = make_writer(&filename)?;
+                    // Write that initial line so we don't drop it!
+                    writer.write_all(line.as_ref())?;
+                    writer.write_all("\n".as_ref())?;
+                    // Handoff to Rsc state
                     state = ReadState::Rsc { writer };
                 }
                 ReadState::Rsc { writer } => {
@@ -327,7 +353,23 @@ impl P8Dumper {
                 writer.flush()?;
             }
         }
-        Ok((files_written, tab_order, rsc_order))
+        // Write the tab order and resource order
+        let mut tab_writer = make_writer(TAB_ORDER_FILE)?;
+        for line in tab_order.iter() {
+            tab_writer.write_all(line.as_ref())?;
+            tab_writer.write_all("\n".as_ref())?;
+        }
+        tab_writer.flush()?;
+        let mut rsc_writer = make_writer(RSC_ORDER_FILE)?;
+        for line in rsc_order.iter() {
+            rsc_writer.write_all(line.as_ref())?;
+            rsc_writer.write_all("\n".as_ref())?;
+        }
+        rsc_writer.flush()?;
+        Ok(DumpResults {
+            tab_order,
+            rsc_order,
+        })
     }
 }
 
@@ -370,7 +412,15 @@ impl P8Builder {
     pub fn build(self) -> anyhow::Result<()> {
         let Self { mut writer, source } = self;
         // get the stuff
-        let mut components = ComponentFiles::list(source)?;
+        let mut components = ComponentFiles::list(&source)?;
+        // load the order files
+        let tab_order = read_optional_text_file(source.join(TAB_ORDER_FILE))?;
+        let mut rsc_order = read_optional_text_file(source.join(RSC_ORDER_FILE))?;
+        // tbh this shouldn't ever happen, but anyway:
+        if rsc_order.trim().is_empty() {
+            rsc_order = DEFAULT_RESOURCE_ORDER.join("\n");
+            rsc_order.push('\n');
+        }
         // write header
         writer.write_all(P8_HEADER.as_ref())?;
         // write luas
@@ -380,23 +430,35 @@ impl P8Builder {
         // need to keep track of which file is last so we don't write an extra
         // scissors line.
         // Well, we'll just go line-by-line. less efficient, but safer.
-        if !components.lua.is_empty() {
-            // do the first one, then any extras with scissor lines.
-            slurp_file_by_line(&mut writer, &components.lua[0])?;
-            for path in &components.lua[1..] {
-                // scissor line
-                writer.write_all("-->8\n".as_ref())?;
+        let mut first = true;
+        // First write the known tab order
+        for script_name in tab_order.lines() {
+            if let Some(path) = components.lua_map.remove(script_name) {
+                if !first {
+                    // scissor line
+                    writer.write_all("-->8\n".as_ref())?;
+                }
+                first = false;
                 slurp_file_by_line(&mut writer, path)?;
             }
         }
-        // write known resources
-        for kind in RESOURCE_ORDER {
+        // Then leftover scripts in arbitrary order
+        for path in components.lua_map.values() {
+            if !first {
+                // scissor line
+                writer.write_all("-->8\n".as_ref())?;
+            }
+            first = false;
+            slurp_file_by_line(&mut writer, path)?;
+        }
+        // Write known resources
+        for kind in rsc_order.lines() {
             if let Some(path) = components.rsc.remove(kind) {
                 writer.write_all(format!("__{}__\n", kind).as_ref())?;
                 slurp_file_by_line(&mut writer, path)?;
             }
         }
-        // write any leftover resources in arbitrary order 🤷🏽
+        // Then leftover resources in arbitrary order
         for (kind, path) in components.rsc.iter() {
             writer.write_all(format!("__{}__\n", kind).as_ref())?;
             slurp_file_by_line(&mut writer, path)?;
@@ -409,7 +471,6 @@ impl P8Builder {
 
 #[derive(Debug)]
 struct ComponentFiles {
-    lua: Vec<PathBuf>,
     lua_map: HashMap<String, PathBuf>,
     rsc: HashMap<String, PathBuf>,
 }
@@ -418,10 +479,19 @@ fn osstr_eq_bytes(osstr: &OsStr, bytes: &[u8]) -> bool {
     osstr.as_encoded_bytes() == bytes
 }
 
+fn read_optional_text_file(path: impl AsRef<Path>) -> anyhow::Result<String> {
+    match std::fs::read(path.as_ref()) {
+        Ok(stuff) => Ok(String::from_utf8(stuff)?),
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound => Ok("".to_string()),
+            _ => Err(e.into()),
+        },
+    }
+}
+
 impl ComponentFiles {
     /// Takes an absolute directory path, finds and sorts the p8 stuff.
     fn list(dir: impl AsRef<Path>) -> std::io::Result<Self> {
-        let mut lua = Vec::new();
         let mut lua_map = HashMap::new();
         let mut rsc = HashMap::new();
         for item in std::fs::read_dir(dir.as_ref())? {
@@ -438,53 +508,36 @@ impl ComponentFiles {
                     continue;
                 };
                 if osstr_eq_bytes(ext, b"lua") {
-                    lua.push(path.clone());
                     lua_map.insert(stem.to_string_lossy().into_owned(), path);
                 } else if osstr_eq_bytes(ext, b"p8rsc") {
                     rsc.insert(stem.to_string_lossy().into_owned(), path);
                 }
             }
         }
-        // Sort luas by filename; since they're numbered, this should put them back
-        // in the order they arrived in. If you made conflicting numbers, the
-        // resulting built order will be abritrary, and it'll sort itself out
-        // on the next round trip.
-        lua.sort_unstable();
-        Ok(Self { lua, lua_map, rsc })
+        Ok(Self { lua_map, rsc })
     }
 
-    /// Given a list of .lua and .p8rsc files, remove any items in that list
-    /// from the collections.
-    fn difference(&mut self, subset: Vec<String>) {
-        let lua_ext = OsStr::new("lua");
-        let rsc_ext = OsStr::new("p8rsc");
+    /// Given a list of script names, remove any matching items from the collection.
+    fn remove_script_names(&mut self, subset: &[impl AsRef<str>]) {
         for item in subset {
-            let to_remove = Path::new(&item);
-            let Some(ext) = to_remove.extension() else {
-                continue;
-            };
-            if ext == lua_ext {
-                self.lua
-                    .retain(|file| file.file_name() != to_remove.file_name());
-            } else if ext == rsc_ext {
-                let Some(os_kind) = to_remove.file_stem() else {
-                    continue;
-                };
-                let Some(kind) = os_kind.to_str() else {
-                    continue;
-                };
-                self.rsc.remove(kind);
-            }
+            self.lua_map.remove(item.as_ref());
+        }
+    }
+
+    /// Given a list of resource kinds, remove any matching items from the collection.
+    fn remove_resource_kinds(&mut self, subset: &[impl AsRef<str>]) {
+        for item in subset {
+            self.rsc.remove(item.as_ref());
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.lua.is_empty() && self.rsc.is_empty()
+        self.lua_map.is_empty() && self.rsc.is_empty()
     }
 
     fn iter(&self) -> impl Iterator<Item = &PathBuf> {
-        let lua = self.lua.iter();
-        let rsc = self.rsc.iter().map(|e| e.1);
+        let lua = self.lua_map.values();
+        let rsc = self.rsc.values();
         lua.chain(rsc)
     }
 }
