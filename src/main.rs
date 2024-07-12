@@ -410,6 +410,7 @@ impl P8Builder {
 #[derive(Debug)]
 struct ComponentFiles {
     lua: Vec<PathBuf>,
+    lua_map: HashMap<String, PathBuf>,
     rsc: HashMap<String, PathBuf>,
 }
 
@@ -421,6 +422,7 @@ impl ComponentFiles {
     /// Takes an absolute directory path, finds and sorts the p8 stuff.
     fn list(dir: impl AsRef<Path>) -> std::io::Result<Self> {
         let mut lua = Vec::new();
+        let mut lua_map = HashMap::new();
         let mut rsc = HashMap::new();
         for item in std::fs::read_dir(dir.as_ref())? {
             // If it's a lua file, put it in the vec (then later sort the vec).
@@ -431,14 +433,15 @@ impl ComponentFiles {
                 // doing an early allocating conversion to PathBuf so I can check
                 // file extension without having to write my own .split() for OsStr -_-
                 let path = entry.path();
-                if let Some(ext) = path.extension() {
-                    if osstr_eq_bytes(ext, b"lua") {
-                        lua.push(path);
-                    } else if osstr_eq_bytes(ext, b"p8rsc") {
-                        if let Some(kind) = path.file_stem() {
-                            rsc.insert(kind.to_string_lossy().into_owned(), path);
-                        }
-                    }
+                // Skip filenames that don't have both stem and extension, they're deffo not ours.
+                let (Some(stem), Some(ext)) = (path.file_stem(), path.extension()) else {
+                    continue;
+                };
+                if osstr_eq_bytes(ext, b"lua") {
+                    lua.push(path.clone());
+                    lua_map.insert(stem.to_string_lossy().into_owned(), path);
+                } else if osstr_eq_bytes(ext, b"p8rsc") {
+                    rsc.insert(stem.to_string_lossy().into_owned(), path);
                 }
             }
         }
@@ -447,7 +450,7 @@ impl ComponentFiles {
         // resulting built order will be abritrary, and it'll sort itself out
         // on the next round trip.
         lua.sort_unstable();
-        Ok(Self { lua, rsc })
+        Ok(Self { lua, lua_map, rsc })
     }
 
     /// Given a list of .lua and .p8rsc files, remove any items in that list
