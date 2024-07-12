@@ -134,6 +134,24 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+trait LineWrite {
+    fn write_line(&mut self, buf: &[u8]) -> std::io::Result<()>;
+
+    fn write_strline(&mut self, line: &str) -> std::io::Result<()> {
+        self.write_line(line.as_ref())
+    }
+}
+
+impl<W> LineWrite for W
+where
+    W: std::io::Write,
+{
+    fn write_line(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        self.write_all(buf)?;
+        self.write_all(b"\n")
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 enum DefaultP8Error {
     #[error("No default .p8: zero existing .p8 files in the working directory.\nYou'll need to specify a filename.")]
@@ -280,14 +298,12 @@ impl P8Dumper {
                     // we'll damn well get one next time :] This makes THIS round-trip
                     // inexact, but it should help keep subsequent round-trips more stable.
                     if maybe_name.is_none() {
-                        writer.write_all(format!("-- {}", &name).as_ref())?;
-                        writer.write_all("\n".as_ref())?;
+                        writer.write_strline(&format!("-- {}", &name))?;
                     }
                     // Save the script name to tab order
                     tab_order.push(name);
                     // Write that initial line so we don't drop it!
-                    writer.write_all(line.as_ref())?;
-                    writer.write_all("\n".as_ref())?;
+                    writer.write_strline(&line)?;
                     // bump the index for next time
                     lua_index += 1;
                     // go.
@@ -308,8 +324,7 @@ impl P8Dumper {
                         };
                     } else {
                         // normal line. write!
-                        writer.write_all(line.as_ref())?;
-                        writer.write_all("\n".as_ref())?;
+                        writer.write_strline(&line)?;
                     }
                 }
                 ReadState::RscStart { kind } => {
@@ -319,8 +334,7 @@ impl P8Dumper {
                     rsc_order.push(kind);
                     let mut writer = make_writer(&filename)?;
                     // Write that initial line so we don't drop it!
-                    writer.write_all(line.as_ref())?;
-                    writer.write_all("\n".as_ref())?;
+                    writer.write_strline(&line)?;
                     // Handoff to Rsc state
                     state = ReadState::Rsc { writer };
                 }
@@ -333,8 +347,7 @@ impl P8Dumper {
                         };
                     } else {
                         // normal line. write!
-                        writer.write_all(line.as_ref())?;
-                        writer.write_all("\n".as_ref())?;
+                        writer.write_strline(&line)?;
                     }
                 }
             }
@@ -360,14 +373,12 @@ impl P8Dumper {
         // Write the tab order and resource order
         let mut tab_writer = make_writer(TAB_ORDER_FILE)?;
         for line in tab_order.iter() {
-            tab_writer.write_all(line.as_ref())?;
-            tab_writer.write_all("\n".as_ref())?;
+            tab_writer.write_strline(line)?;
         }
         tab_writer.flush()?;
         let mut rsc_writer = make_writer(RSC_ORDER_FILE)?;
         for line in rsc_order.iter() {
-            rsc_writer.write_all(line.as_ref())?;
-            rsc_writer.write_all("\n".as_ref())?;
+            rsc_writer.write_strline(line)?;
         }
         rsc_writer.flush()?;
         Ok(DumpResults {
@@ -396,8 +407,7 @@ where
     let reader = BufReader::new(File::open(path)?);
     for item in reader.lines() {
         let line = item?;
-        writer.write_all(line.as_ref())?;
-        writer.write_all("\n".as_ref())?;
+        writer.write_strline(&line)?;
     }
     Ok(())
 }
@@ -430,15 +440,10 @@ impl P8Builder {
             version = DEFAULT_P8_VERSION.to_string();
         }
         // write header
-        writer.write_all(
-            format!(
-                "pico-8 cartridge // http://www.pico-8.com\nversion {}\n",
-                version.trim()
-            )
-            .as_ref(),
-        )?;
+        writer.write_strline("pico-8 cartridge // http://www.pico-8.com")?;
+        writer.write_strline(&format!("version {}", version.trim()))?;
         // write luas
-        writer.write_all("__lua__\n".as_ref())?;
+        writer.write_strline("__lua__")?;
         // ...btw, writing these requires some finesse, because 1. I can't
         // guarantee there's a newline at the end of each file, and 2. I
         // need to keep track of which file is last so we don't write an extra
@@ -450,7 +455,7 @@ impl P8Builder {
             if let Some(path) = components.lua.remove(script_name) {
                 if !first {
                     // scissor line
-                    writer.write_all("-->8\n".as_ref())?;
+                    writer.write_strline("-->8")?;
                 }
                 first = false;
                 slurp_file_by_line(&mut writer, path)?;
@@ -460,7 +465,7 @@ impl P8Builder {
         for path in components.lua.values() {
             if !first {
                 // scissor line
-                writer.write_all("-->8\n".as_ref())?;
+                writer.write_strline("-->8")?;
             }
             first = false;
             slurp_file_by_line(&mut writer, path)?;
@@ -468,13 +473,13 @@ impl P8Builder {
         // Write known resources
         for kind in rsc_order.lines() {
             if let Some(path) = components.rsc.remove(kind) {
-                writer.write_all(format!("__{}__\n", kind).as_ref())?;
+                writer.write_strline(&format!("__{}__", kind))?;
                 slurp_file_by_line(&mut writer, path)?;
             }
         }
         // Then leftover resources in arbitrary order
         for (kind, path) in components.rsc.iter() {
-            writer.write_all(format!("__{}__\n", kind).as_ref())?;
+            writer.write_strline(&format!("__{}__", kind))?;
             slurp_file_by_line(&mut writer, path)?;
         }
         // flush
