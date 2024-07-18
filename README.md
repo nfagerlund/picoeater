@@ -7,6 +7,12 @@ This is a small CLI tool to:
 - Dump a .p8 cart into a flurry of component files (lua scripts, and individual binary resources).
 - Build a .p8 cart from a flurry of component files.
 
+## Why
+
+Made this for a game jam with some friends, where we had multiple people working concurrently on a pico8 cart via git. .p8 files are plain text, so that's good, but they have everything in one file, which didn't give us a good way to avoid concurrently touching "binary" resources (sfx, sprites) or make proper sense of script splits/merges.
+
+Our solution was to just explode everything into separate files for version control, and build the compiled cart on demand. You've still gotta be careful with the binary data, but now you can at least track it by filename, and it's a lot easier to edit code in an external editor.
+
 ## Usage
 
 - `picoeater dump thing.p8 --dir /some/directory`
